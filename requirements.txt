@@ -1,0 +1,9 @@
+faiss-cpu
+numpy
+torch
+PyPDF2
+requests
+pillow
+tqdm
+sentence-transformers 
+flask

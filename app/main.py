@@ -27,11 +27,10 @@ MODEL_AHLI = "mistral-large-latest"
 DATA_RAW = "data/raw"
 DATA_PROCESSED = "data/processed"
 
-IMAGE_PATH = os.path.join(DATA_RAW, "Satelit.png")
 PDF_CUACA = os.path.join(DATA_RAW, "cuaca.pdf")
 PDF_TANAH = os.path.join(DATA_RAW, "tanah.pdf")
 JSON_DATA_LATIH = os.path.join(DATA_RAW, "merged_training_data.json")
-JSON_RIWAYAT_BANJIR = os.path.join(DATA_RAW, "jumlah_kejadians.json")
+JSON_RIWAYAT_BANJIR = os.path.join(DATA_RAW, "jumlah_kejadian.json")
 
 CACHE_DOKUMEN_AHLI = os.path.join(DATA_PROCESSED, "cached_docs_ahli.pkl")
 CACHE_EMBED_AHLI = os.path.join(DATA_PROCESSED, "cached_embeddings_ahli.npy")
@@ -39,6 +38,23 @@ CACHE_EMBED_AHLI = os.path.join(DATA_PROCESSED, "cached_embeddings_ahli.npy")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+IMAGE_URL = "https://inderaja.bmkg.go.id/IMAGE/HCAI/CLC/HCAI_CLC_Indonesia.png"
+
+def download_image(url, save_path):
+    """Download gambar dari URL dan simpan ke save_path."""
+    try:
+        # Pastikan folder tujuan ada
+        folder = os.path.dirname(os.path.abspath(save_path))
+        os.makedirs(folder, exist_ok=True)
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        with open(save_path, "wb") as f:
+            for chunk in response.iter_content(1024):
+                f.write(chunk)
+        return save_path
+    except Exception as e:
+        print(f"❌ Error download gambar: {e}")
+        return None
 # ==============================================================================
 # === BAGIAN COMPUTER VISION & ANALISIS CITRA (PERUBAHAN BESAR) ===
 # ==============================================================================
@@ -202,11 +218,18 @@ def analyze_cloud_type_with_llm(cloud_coverage_data, location_info):
 # ==============================================================================
 
 def extract_location_with_llm(text: str) -> dict:
-    # Fungsi ini tidak diubah
-    default_info = {"name": "Tidak Diketahui", "lat": "Tidak Tersedia", "lon": "Tidak Tersedia"}
-    prompt = f"Anda adalah alat ekstraksi data JSON. Dari teks berikut, ekstrak 'location_name', 'latitude', dan 'longitude'. Jika tidak ada, gunakan null.\nTeks: \"{text}\"\nJSON Output Anda:"
+    default_info = {"name": "Tidak Diketahui", "lat": "Tidak Tersedia", "lon": "Tidak Tersedia", "subdistrict": None}
+    prompt = (
+        "Anda adalah alat ekstraksi data JSON. Dari teks berikut, ekstrak 'location_name', 'subdistrict', 'latitude', dan 'longitude'. "
+        "Jika tidak ada, gunakan null.\nTeks: \"{text}\"\nJSON Output Anda:"
+    ).format(text=text)
     headers = {"Authorization": f"Bearer {MISTRAL_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": MODEL_EKSTRAKSI, "messages": [{"role": "user", "content": prompt.strip()}], "temperature": 0.0, "response_format": {"type": "json_object"}}
+    payload = {
+        "model": MODEL_EKSTRAKSI,
+        "messages": [{"role": "user", "content": prompt.strip()}],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"}
+    }
     try:
         response = requests.post(MISTRAL_API_URL, headers=headers, json=payload)
         response.raise_for_status()
@@ -216,6 +239,7 @@ def extract_location_with_llm(text: str) -> dict:
             "name": extracted_data.get("location_name") or extracted_data.get("name") or default_info["name"],
             "lat": str(extracted_data.get("latitude")) if extracted_data.get("latitude") is not None else default_info["lat"],
             "lon": str(extracted_data.get("longitude")) if extracted_data.get("longitude") is not None else default_info["lon"],
+            "subdistrict": extracted_data.get("subdistrict") or extracted_data.get("kecamatan") or None
         }
         return location_info
     except Exception as e:
@@ -281,52 +305,38 @@ def get_final_analysis(main_scenario, supporting_context, satellite_analysis, fi
 # ==============================================================================
 # === ALUR KERJA UTAMA (MAIN) - Dengan Computer Vision ===
 # ==============================================================================
-if __name__ == "__main__":
-    print("=========================================================")
-    print("===  SISTEM ANALISIS RISIKO DENGAN ANALISIS REGIONAL  ===")
-    print("=========================================================\n")
-    
-    # Gunakan prompt contoh jika input kosong untuk kemudahan testing
-    user_provided_scenario = input("Masukkan skenario wilayah dan informasi geografis: ")
-    if not user_provided_scenario:
-        user_provided_scenario = "Tolong analisis wilayah Kota Pangkalpinang, Kepulauan Bangka Belitung. Koordinatnya adalah sekitar Latitude -2.1291 dan Longitude 106.1138. Wilayah ini merupakan kota pesisir dengan topografi dataran rendah yang dialiri oleh beberapa sungai, termasuk Sungai Rangkui yang sering meluap. Banyak area merupakan lahan bekas penambangan timah dan sistem drainase perkotaan seringkali tidak memadai saat terjadi hujan lebat"
-        print(f"\nInput kosong, menggunakan contoh skenario:\n---\n{user_provided_scenario}\n---\n")
 
+def run_full_analysis(user_provided_scenario):
+    """
+    Fungsi utama untuk backend: menerima input teks skenario,
+    mengembalikan hasil analisis sebagai dictionary.
+    Gambar satelit otomatis diunduh dari BMKG.
+    """
     final_question = "Apakah lokasi ini berisiko tinggi terhadap kejadian banjir genangan?"
 
     # TAHAP 0: Ekstraksi Lokasi dengan LLM
-    print("--- TAHAP 0: EKSTRAKSI LOKASI DENGAN LLM ---")
     location_info = extract_location_with_llm(user_provided_scenario)
-    print(f"✅ Lokasi terdeteksi: {location_info['name']} (Lat: {location_info['lat']}, Lon: {location_info['lon']})\n")
 
-    # TAHAP 1: Analisis Citra dengan Computer Vision (Regional)
-    print("--- TAHAP 1: ANALISIS CITRA REGIONAL DENGAN COMPUTER VISION ---")
-    if location_info["lat"] != "Tidak Tersedia" and location_info["lon"] != "Tidak Tersedia":
+    # TAHAP 1: Download gambar satelit terbaru dari BMKG
+    temp_image_path = os.path.join(DATA_RAW, "satelit_auto.png")
+    img_path = download_image(IMAGE_URL, temp_image_path)
+    if not img_path:
+        summary = ""
+        satellite_analysis_result = "Gagal mengunduh gambar satelit dari BMKG."
+    elif location_info["lat"] != "Tidak Tersedia" and location_info["lon"] != "Tidak Tersedia":
         lat = float(location_info["lat"])
         lon = float(location_info["lon"])
-        
-        # 1. Menganalisis cakupan awan di suatu wilayah, bukan satu titik
-        cloud_coverage_data = analyze_cloud_coverage_in_region(IMAGE_PATH, lat, lon, region_radius_deg=0.5) # Radius 0.5 derajat (~55km)
-        
+        cloud_coverage_data = analyze_cloud_coverage_in_region(img_path, lat, lon, region_radius_deg=0.5)
         if "Error" not in cloud_coverage_data:
             summary = ", ".join([f"{cloud}: {percent}%" for cloud, percent in cloud_coverage_data.items()])
-            print(f"    -> Komposisi awan teridentifikasi: **{summary}**")
         else:
-            print(f"    -> {cloud_coverage_data['Error']}")
-
-        # 2. Menganalisis data cakupan awan dengan LLM
+            summary = cloud_coverage_data.get("Error", "")
         satellite_analysis_result = analyze_cloud_type_with_llm(cloud_coverage_data, location_info)
     else:
+        summary = ""
         satellite_analysis_result = "Analisis citra tidak dapat dilakukan karena koordinat tidak lengkap."
 
-    print("\n✅ Analisis Meteorologis Diterima:")
-    print("-----------------------------------------------------")
-    print(satellite_analysis_result)
-    print("-----------------------------------------------------")
-
     # TAHAP 2: Kesimpulan Akhir oleh Ahli
-    print("\n\n--- TAHAP 2: KESIMPULAN AKHIR AHLI ---")
-    # ... (Sisa kode Anda dari sini TIDAK PERLU DIUBAH) ...
     embedder = SentenceTransformer("all-MiniLM-L6-v2", device=DEVICE)
     all_expert_docs = load_and_process_documents(
         pdf_files=[PDF_CUACA, PDF_TANAH],
@@ -334,15 +344,25 @@ if __name__ == "__main__":
         history_path=JSON_RIWAYAT_BANJIR,
         location_name=location_info['name']
     )
+
     if all_expert_docs:
-      expert_embeddings = embedder.encode(all_expert_docs, convert_to_numpy=True, show_progress_bar=True)
-      index = faiss.IndexFlatL2(expert_embeddings.shape[1])
-      index.add(expert_embeddings)
-      query_vector = embedder.encode([user_provided_scenario], convert_to_numpy=True)
-      D, I = index.search(query_vector, k=7)
-      context_for_expert = "\n\n".join([all_expert_docs[i] for i in I[0]])
+        if os.path.exists(CACHE_EMBED_AHLI) and os.path.exists(CACHE_DOKUMEN_AHLI):
+            with open(CACHE_DOKUMEN_AHLI, "rb") as f:
+                all_expert_docs = pickle.load(f)
+            expert_embeddings = np.load(CACHE_EMBED_AHLI)
+        else:
+            expert_embeddings = embedder.encode(all_expert_docs, convert_to_numpy=True, show_progress_bar=False)
+            with open(CACHE_DOKUMEN_AHLI, "wb") as f:
+                pickle.dump(all_expert_docs, f)
+            np.save(CACHE_EMBED_AHLI, expert_embeddings)
+
+        index = faiss.IndexFlatL2(expert_embeddings.shape[1])
+        index.add(expert_embeddings)
+        query_vector = embedder.encode([user_provided_scenario], convert_to_numpy=True)
+        D, I = index.search(query_vector, k=7)
+        context_for_expert = "\n\n".join([all_expert_docs[i] for i in I[0]])
     else:
-      context_for_expert = "Tidak ada dokumen pendukung yang ditemukan."
+        context_for_expert = "Tidak ada dokumen pendukung yang ditemukan."
 
     final_report = get_final_analysis(
         user_provided_scenario, 
@@ -351,7 +371,11 @@ if __name__ == "__main__":
         final_question
     )
 
-    print("\n=====================================================")
-    print("===           KESIMPULAN ANALISIS AHLI           ===")
-    print("=====================================================\n")
-    print(final_report)
+    # Kembalikan hasil sebagai dictionary
+    return {
+        "location_info": location_info,
+        "cloud_coverage_summary": summary,
+        "satellite_analysis": satellite_analysis_result,
+        "expert_context": context_for_expert,
+        "final_report": final_report
+    }

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Peta Wilayah Interaktif</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { font-family: sans-serif; padding: 10px; }
+    select, input[type="range"] { margin: 5px 10px 5px 0; }
+    #map { height: 500px; margin-top: 10px; }
+    #coords { margin-top: 10px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>Peta Interaktif Wilayah Indonesia</h2>
+
+  <label>Provinsi:</label>
+  <select id="provinsi">
+    <option value="">-- Pilih Provinsi --</option>
+  </select>
+
+  <label>Kota/Kabupaten:</label>
+  <select id="kota">
+    <option value="">-- Pilih Kota/Kabupaten --</option>
+  </select>
+
+  <label>Kecamatan (terdekat):</label>
+  <select id="kecamatan">
+    <option value="">-- Pilih Kecamatan --</option>
+  </select>
+
+  <br><br>
+
+  <label>Warna Wilayah:</label>
+  <select id="fillColor">
+    <option value="#ff0000">Merah</option>
+    <option value="#ffff00">Kuning</option>
+    <option value="#00ff00">Hijau</option>
+  </select>
+
+  <label style="margin-left: 20px;">Opacity:</label>
+  <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="0.5">
+  <span id="opacityValue">0.5</span>
+
+  <div id="map"></div>
+  <div id="coords">Latitude: -, Longitude: -</div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([-2.5, 118], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let marker;
+    let geojsonLayer;
+
+    const coordDisplay = document.getElementById("coords");
+
+    const provinsiSelect = document.getElementById('provinsi');
+    const kotaSelect = document.getElementById('kota');
+    const kecSelect = document.getElementById('kecamatan');
+    const fillColorSelect = document.getElementById('fillColor');
+    const opacitySlider = document.getElementById('opacitySlider');
+    const opacityValue = document.getElementById('opacityValue');
+
+    let provinces = [], regencies = [], districts = [];
+    let currentFillColor = fillColorSelect.value;
+    let currentOpacity = parseFloat(opacitySlider.value);
+
+    async function loadData() {
+      const [provData, regData, distData] = await Promise.all([
+        fetch('provinces.json').then(res => res.json()),
+        fetch('regencies.json').then(res => res.json()),
+        fetch('districts.json').then(res => res.json())
+      ]);
+      provinces = provData;
+      regencies = regData;
+      districts = distData;
+      populateDropdown(provinsiSelect, provinces);
+    }
+
+    function populateDropdown(selectEl, items, filterKey = null, filterVal = null) {
+      selectEl.innerHTML = '<option value="">-- Pilih --</option>';
+      items
+        .filter(item => !filterKey || item[filterKey] === filterVal)
+        .forEach(item => {
+          const opt = document.createElement('option');
+          opt.value = item.id;
+          opt.textContent = item.name;
+          opt.dataset.lat = item.latitude;
+          opt.dataset.lon = item.longitude;
+          selectEl.appendChild(opt);
+        });
+    }
+
+    function flyToLocation(lat, lon, name) {
+      map.flyTo([lat, lon], 11, { animate: true, duration: 2 });
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lon]).addTo(map).bindPopup(name).openPopup();
+      coordDisplay.textContent = `Latitude: ${lat.toFixed(6)}, Longitude: ${lon.toFixed(6)}`;
+    }
+
+    function loadGeoJSON(path) {
+      if (geojsonLayer) map.removeLayer(geojsonLayer);
+      fetch(path)
+        .then(res => res.json())
+        .then(data => {
+          geojsonLayer = L.geoJSON(data, {
+            style: {
+              color: "#3388ff",
+              weight: 2,
+              fillColor: currentFillColor,
+              fillOpacity: currentOpacity
+            }
+          }).addTo(map);
+          map.fitBounds(geojsonLayer.getBounds());
+        });
+    }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const toRad = deg => deg * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function findNearbyDistricts(lat, lon, maxDistance = 30) {
+      return districts
+        .map(d => {
+          const dist = haversine(lat, lon, parseFloat(d.latitude), parseFloat(d.longitude));
+          return { ...d, distance: dist };
+        })
+        .filter(d => d.distance <= maxDistance)
+        .sort((a, b) => a.distance - b.distance);
+    }
+
+    // Event: pilih provinsi
+    provinsiSelect.addEventListener('change', function () {
+      const selectedId = this.value;
+      const lat = parseFloat(this.selectedOptions[0].dataset.lat);
+      const lon = parseFloat(this.selectedOptions[0].dataset.lon);
+      flyToLocation(lat, lon, this.selectedOptions[0].textContent);
+      loadGeoJSON(`province/${selectedId}.geojson`);
+      populateDropdown(kotaSelect, regencies, 'province_id', selectedId);
+      kecSelect.innerHTML = '<option value="">-- Pilih Kecamatan --</option>';
+    });
+
+    // Event: pilih kabupaten/kota
+    kotaSelect.addEventListener('change', function () {
+      const selectedId = this.value;
+      const lat = parseFloat(this.selectedOptions[0].dataset.lat);
+      const lon = parseFloat(this.selectedOptions[0].dataset.lon);
+      flyToLocation(lat, lon, this.selectedOptions[0].textContent);
+      loadGeoJSON(`regency/${selectedId}.geojson`);
+      const nearby = findNearbyDistricts(lat, lon, 30);
+      kecSelect.innerHTML = '<option value="">-- Pilih Kecamatan --</option>';
+      nearby.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.textContent = `${d.name} (${d.distance.toFixed(1)} km)`;
+        opt.dataset.lat = d.latitude;
+        opt.dataset.lon = d.longitude;
+        kecSelect.appendChild(opt);
+      });
+    });
+
+    // Event: pilih kecamatan
+    kecSelect.addEventListener('change', function () {
+      const lat = parseFloat(this.selectedOptions[0].dataset.lat);
+      const lon = parseFloat(this.selectedOptions[0].dataset.lon);
+      flyToLocation(lat, lon, this.selectedOptions[0].textContent);
+    });
+
+    // Event: ganti warna
+    fillColorSelect.addEventListener('change', () => {
+      currentFillColor = fillColorSelect.value;
+      if (geojsonLayer) geojsonLayer.setStyle({ fillColor: currentFillColor });
+    });
+
+    // Event: ganti opacity
+    opacitySlider.addEventListener('input', () => {
+      currentOpacity = parseFloat(opacitySlider.value);
+      opacityValue.textContent = currentOpacity.toFixed(2);
+      if (geojsonLayer) geojsonLayer.setStyle({ fillOpacity: currentOpacity });
+    });
+
+    loadData();
+  </script>
+</body>
+</html>

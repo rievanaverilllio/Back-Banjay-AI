@@ -29,12 +29,12 @@ def analisis_wilayah():
     }
 
     # Simpan hasil sebagai file JSON lokal
-    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # filename = f"hasil/analisis_{timestamp}.json"
-    # with open(filename, 'w', encoding='utf-8') as f:
-    #     json.dump(full_data, f, ensure_ascii=False, indent=2)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"hasil/analisis_{timestamp}.json"
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(full_data, f, ensure_ascii=False, indent=2)
 
-    # return jsonify({"hasil": result, "saved_to": filename})
+    return jsonify({"hasil": result, "saved_to": filename})
 
 if __name__ == "__main__":
     app.run(debug=True)
